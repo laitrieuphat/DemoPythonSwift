@@ -8,7 +8,7 @@
 import UIKit
 import AVFoundation
 import TensorFlowLite
-import CoreMedia
+
 
 
 class CameraTestViewController: UIViewController {
@@ -23,9 +23,9 @@ class CameraTestViewController: UIViewController {
         l.translatesAutoresizingMaskIntoConstraints = false
         l.backgroundColor = UIColor.black.withAlphaComponent(0.5)
         l.textColor = .white
-        l.font = UIFont.systemFont(ofSize: 20, weight: .bold) // Tăng font size
-        l.numberOfLines = 1 // Chỉ hiển thị Top 1
-        l.textAlignment = .left // Căn lề trái
+        l.font = UIFont.systemFont(ofSize: 20, weight: .bold)
+        l.numberOfLines = 0
+        l.textAlignment = .left
         l.layer.cornerRadius = 8
         l.clipsToBounds = true
         l.text = "Predictions will appear here"
@@ -61,7 +61,7 @@ class CameraTestViewController: UIViewController {
     
     // throttle frames
     private var lastRun: Date = .distantPast
-    private let minFrameInterval: TimeInterval = 0.05 // 20 FPS (Tăng lên để mô phỏng Jetson/TensorRT)
+    private let minFrameInterval: TimeInterval = 0.05
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -93,7 +93,7 @@ class CameraTestViewController: UIViewController {
             fpsLabel.widthAnchor.constraint(equalToConstant: 120),
             fpsLabel.heightAnchor.constraint(equalToConstant: 30),
             
-            // **[NEW]** Prediction Label Constraints (Top Right, gần bounding box)
+            // **[NEW]** Prediction Label Constraints (Top Right)
             predictionLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
             predictionLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
             predictionLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 40)
@@ -303,7 +303,7 @@ extension CameraTestViewController: AVCaptureVideoDataOutputSampleBufferDelegate
     }
     
     
-    // MARK: - Preprocess image (Updated to include Center Crop)
+    // MARK: - Preprocess image (No normalization, only crop + resize)
     private func preprocess(pixelBuffer: CVPixelBuffer) -> Data? {
         let originalWidth = CVPixelBufferGetWidth(pixelBuffer)
         let originalHeight = CVPixelBufferGetHeight(pixelBuffer)
@@ -317,35 +317,68 @@ extension CameraTestViewController: AVCaptureVideoDataOutputSampleBufferDelegate
         
         // 2. Crop CIImage
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer).cropped(to: cropRect)
-        
-        // 3. Convert cropped CIImage to UIImage
         let context = CIContext(options: nil)
         guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
             print("ERROR: Failed to create CGImage from cropped CIImage.")
             return nil
         }
-        let croppedUIImage = UIImage(cgImage: cgImage)
         
-        // 4. Resize to model size (224x224)
+        // 3. Convert to UIImage and resize to model input size
+        let croppedUIImage = UIImage(cgImage: cgImage)
         UIGraphicsBeginImageContext(CGSize(width: inputWidth, height: inputHeight))
         croppedUIImage.draw(in: CGRect(x: 0, y: 0, width: inputWidth, height: inputHeight))
         let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
         UIGraphicsEndImageContext()
         
-        // 5. Normalize and return data
-        // **[FIX]** Now using the defined `normalizedData()` extension which converts
-        // the resized image pixels to normalized float data for the TFLite model.
-        guard let rgbData = resizedImage?.normalizedData() else {
-            print("ERROR: normalizedData() failed to generate input data.")
+        guard let finalImage = resizedImage,
+              let cgFinal = finalImage.cgImage else {
+            print("ERROR: Resize failed.")
             return nil
+        }
+        
+        // 4. Convert to raw RGB data (no normalization)
+        let width = cgFinal.width
+        let height = cgFinal.height
+        let bytesPerPixel = 4
+        let bytesPerRow = bytesPerPixel * width
+        let bitsPerComponent = 8
+        
+        var pixelData = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+        guard let colorSpace = cgFinal.colorSpace else { return nil }
+        guard let context2 = CGContext(data: &pixelData,
+                                       width: width,
+                                       height: height,
+                                       bitsPerComponent: bitsPerComponent,
+                                       bytesPerRow: bytesPerRow,
+                                       space: colorSpace,
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else {
+            print("ERROR: CGContext creation failed.")
+            return nil
+        }
+        
+        context2.draw(cgFinal, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // 5. Convert RGBA -> RGB and cast to Float32 (no normalization)
+        var rgbArray = [Float32]()
+        rgbArray.reserveCapacity(width * height * 3)
+        for i in stride(from: 0, to: pixelData.count, by: 4) {
+            let r = Float32(pixelData[i])
+            let g = Float32(pixelData[i + 1])
+            let b = Float32(pixelData[i + 2])
+            rgbArray.append(r)
+            rgbArray.append(g)
+            rgbArray.append(b)
         }
         
         // 6. Draw bounding box on the screen (Main thread required for UI)
         DispatchQueue.main.async {
-            self.drawBoundingBox(cropRect: cropRect, originalSize: CGSize(width: originalWidth, height: originalHeight))
+            self.drawBoundingBox(cropRect: cropRect,
+                                 originalSize: CGSize(width: originalWidth, height: originalHeight))
         }
         
-        return rgbData
+        print("preprocess(): returning raw RGB data, count=\(rgbArray.count)")
+        return Data(buffer: UnsafeBufferPointer(start: rgbArray, count: rgbArray.count))
     }
 }
 
