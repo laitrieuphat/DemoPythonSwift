@@ -2,4 +2,4 @@
 - Bước 2: xoá hết file pod và pod locks (nếu có)
 - Bước 3: pod install (cài đặt thư viện)
 - Bước 4: nếu chạy trên physic device cần phải có apple ID ( chọn vào project -> Targets -> singing and capabilities -> Team -> add account)
-- Bước 5: chọn tới thiết bị di động mình run (cmd+r) or build(cmd+b)
+- Bước 5: chọn tới thiết bị di động mình run (cmd+r) or build(cmd+b) -> nhớ chọn đúng target project 
